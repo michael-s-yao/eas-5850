@@ -9,7 +9,6 @@ Licensed under the MIT License. Copyright University of Pennsylvania 2024.
 import json
 import logging
 import pyorthanc
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, NamedTuple, Optional, Tuple, Union
@@ -82,19 +81,19 @@ def get_study_info(
 
 
 def save_study_info(
-    study_info: StudyInfo, savepath: Union[Path, str], indent: int = 2
+    study_info: Dict[str, Any], savepath: Union[Path, str], indent: int = 2
 ) -> None:
     """
     Saves information about a patient study to a specified JSON filepath.
     Input:
-        study_info: a StudyInfo object.
+        study_info: a dictionary of information to save.
         savepath: file path to save the study info to.
         indent: number of spaces to use for indentation. Default 2.
     Returns:
         None.
     """
     with open(savepath, "w") as f:
-        json.dump(study_info._asdict(), f, indent=indent)
+        json.dump(study_info, f, indent=indent)
     logging.info(f"Saved study info to {savepath}")
     return
 
@@ -151,16 +150,28 @@ def main(
     # Retrieve the requested information about the existing study.
     study_info, patient, study, series = get_study_info(client, patient_id)
     assert study_info is not None, "Patient {patient_id} query failed"
-    if savepath is not None:
-        save_study_info(study_info, savepath, **kwargs)
 
-    # Answer the questions about the study.
+    # Answer the questions about the imaging study.
     image = series.instances[instance_idx].get_pydicom().pixel_array
-    logging.info(f"Number of Rows: {image.shape[0]}")
-    logging.info(f"Number of Columns: {image.shape[-1]}")
-    logging.info(f"Minimum Pixel Value: {image.min()}")
-    logging.info(f"Maximum Pixel Value: {image.max()}")
-    logging.info(f"Average Pixel Value: {image.mean()}")
+    num_rows, num_cols = image.shape
+    min_pixel_val, max_pixel_val = image.min(), image.max()
+    mean_pixel_val = image.mean()
+    logging.info(f"Number of Rows: {num_rows}")
+    logging.info(f"Number of Columns: {num_cols}")
+    logging.info(f"Minimum Pixel Value: {min_pixel_val}")
+    logging.info(f"Maximum Pixel Value: {max_pixel_val}")
+    logging.info(f"Average Pixel Value: {mean_pixel_val}")
+
+    if savepath is not None:
+        save_data = study_info._asdict()
+        save_data.update(
+            num_rows=int(num_rows),
+            num_cols=int(num_cols),
+            min_pixel_value=int(min_pixel_val),
+            max_pixel_value=int(max_pixel_val),
+            mean_pixel_value=int(mean_pixel_val),
+        )
+        save_study_info(save_data, savepath, **kwargs)
 
     # Modify the study.
     new_instance_uid = study_info.StudyInstanceUID[:len(str(penn_id))] + (
