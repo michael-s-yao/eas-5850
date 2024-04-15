@@ -9,7 +9,6 @@ Licensed under the MIT License. Copyright University of Pennsylvania 2024.
 import json
 import logging
 import pyorthanc
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, NamedTuple, Optional, Tuple, Union
 
@@ -22,8 +21,8 @@ PENN_ID: int = 12345678
 SAVEPATH: Union[Path, str] = "study_info.json"
 
 
-class StudyInfo(NamedTuple):
-    Age: Optional[int]
+class InstanceInfo(NamedTuple):
+    Age: str
     Sex: str
     StudyDescription: str
     Modality: str
@@ -31,74 +30,103 @@ class StudyInfo(NamedTuple):
     PatientID: str
     NumSeries: int
     StudyInstanceUID: str
+    NumRows: int
+    NumCols: int
+    MinPixelVal: float
+    MaxPixelVal: float
+    MeanPixelVal: float
 
 
-def get_study_info(
-    client: pyorthanc.Orthanc, patient_id: str
+def get_instance_info(
+    client: pyorthanc.Orthanc,
+    patient_id: str,
+    series_number: int,
+    instance_number: int
 ) -> Tuple[
-    Optional[StudyInfo],
+    Optional[InstanceInfo],
     Optional[pyorthanc.Patient],
     Optional[pyorthanc.Study],
-    Optional[pyorthanc.Series]
+    Optional[pyorthanc.Series],
+    Optional[pyorthanc.Instance],
 ]:
     """
     Retrieves the information about a patient study.
     Input:
         client: an Orthanc client to retrieve the study info from.
         patient_id: the patient ID to query by.
+        series_number: the index of the series in the study to retrieve.
+        instance_number: the index of the isntance in the series to retreive.
     Returns:
-        study_info: a StudyInfo object. Returns None if no patient was found.
+        instance_info: an InstanceInfo object. Returns None if no patient was
+            found.
         patient: a Patient object. Returns None if no patient was found.
         study: a Study object. Returns None if no patient was found.
         series: a Series object. Returns None if no patient was found.
+        instance: an Instance object. Returns None if no patient was found.
     """
     query_results = pyorthanc.find_patients(client, {"PatientID": patient_id})
     if len(query_results) == 0:
         return None, None, None, None
+
     patient = next(iter(query_results))
+    patient_info = patient.main_dicom_tags
 
-    patient_info = patient.get_main_information()["MainDicomTags"]
-    bday, age = patient.birth_date, None
-    DAYS_PER_YEAR = 365.25
-    if bday is not None:
-        age = int((datetime.now() - bday).days / DAYS_PER_YEAR)
     study = next(iter(patient.studies))
-    study_info = study.get_main_information()["MainDicomTags"]
-    series = next(iter(study.series))
-    series_info = series.get_main_information()["MainDicomTags"]
+    study_info = study.main_dicom_tags
 
-    study_info = StudyInfo(**{
-        "Age": age,
+    series = next(
+        filter(lambda x: x.series_number == series_number, study.series)
+    )
+    series_info = series.main_dicom_tags
+
+    instance = next(
+        filter(
+            lambda x: x.instance_number == instance_number, series.instances
+        )
+    )
+
+    image_data = instance.get_pydicom().pixel_array
+    num_rows, num_cols = image_data.shape
+    min_pixel_val, max_pixel_val = image_data.min(), image_data.max()
+    mean_pixel_val = image_data.mean()
+
+    instance_info = InstanceInfo(**{
+        "Age": instance.tags["0010,1010"]["Value"],
         "Sex": patient.sex,
         "StudyDescription": study_info["StudyDescription"],
         "Modality": series_info["Modality"],
         "Manufacturer": series_info["Manufacturer"],
         "PatientID": patient_info["PatientID"],
         "NumSeries": len(study.series),
-        "StudyInstanceUID": study_info["StudyInstanceUID"]
+        "StudyInstanceUID": study_info["StudyInstanceUID"],
+        "NumRows": int(num_rows),
+        "NumCols": int(num_cols),
+        "MinPixelVal": float(min_pixel_val),
+        "MaxPixelVal": float(max_pixel_val),
+        "MeanPixelVal": float(mean_pixel_val),
     })
-    return study_info, patient, study, series
+    return instance_info, patient, study, series, instance
 
 
-def save_study_info(
-    study_info: Dict[str, Any], savepath: Union[Path, str], indent: int = 2
+def save_instance_info(
+    instance_info: Dict[str, Any], savepath: Union[Path, str], indent: int = 2
 ) -> None:
     """
-    Saves information about a patient study to a specified JSON filepath.
+    Saves information about a patient instance to a specified JSON filepath.
     Input:
-        study_info: a dictionary of information to save.
+        instance_info: a dictionary of information to save.
         savepath: file path to save the study info to.
         indent: number of spaces to use for indentation. Default 2.
     Returns:
         None.
     """
     with open(savepath, "w") as f:
-        json.dump(study_info, f, indent=indent)
-    logging.info(f"Saved study info to {savepath}")
+        json.dump(instance_info, f, indent=indent)
+    logging.info(f"Saved instance info to {savepath}")
     return
 
 
-def modify_study_info(
+def modify_instance_info(
     patient: Optional[pyorthanc.Patient] = None,
     study: Optional[pyorthanc.Study] = None,
     series: Optional[pyorthanc.Series] = None,
@@ -135,7 +163,8 @@ def main(
     orthanc_url: Union[Path, str] = "http://localhost:8042",
     username: str = "orthanc",
     password: str = "orthanc",
-    instance_idx: int = 0,
+    series_number: int = 4,
+    instance_number: int = 130,
     savepath: Optional[Union[Path, str]] = None,
     **kwargs
 ):
@@ -147,37 +176,24 @@ def main(
         password=password
     )
 
-    # Retrieve the requested information about the existing study.
-    study_info, patient, study, series = get_study_info(client, patient_id)
-    assert study_info is not None, "Patient {patient_id} query failed"
-
-    # Answer the questions about the imaging study.
-    image = series.instances[instance_idx].get_pydicom().pixel_array
-    num_rows, num_cols = image.shape
-    min_pixel_val, max_pixel_val = image.min(), image.max()
-    mean_pixel_val = image.mean()
-    logging.info(f"Number of Rows: {num_rows}")
-    logging.info(f"Number of Columns: {num_cols}")
-    logging.info(f"Minimum Pixel Value: {min_pixel_val}")
-    logging.info(f"Maximum Pixel Value: {max_pixel_val}")
-    logging.info(f"Average Pixel Value: {mean_pixel_val}")
+    # Retrieve the requested information about the existing study, and
+    # answer the questions about the imaging study.
+    instance_info, patient, study, series, _ = get_instance_info(
+        client,
+        patient_id,
+        series_number=series_number,
+        instance_number=instance_number
+    )
+    assert instance_info is not None, "Patient {patient_id} query failed"
 
     if savepath is not None:
-        save_data = study_info._asdict()
-        save_data.update(
-            num_rows=int(num_rows),
-            num_cols=int(num_cols),
-            min_pixel_value=int(min_pixel_val),
-            max_pixel_value=int(max_pixel_val),
-            mean_pixel_value=int(mean_pixel_val),
-        )
-        save_study_info(save_data, savepath, **kwargs)
+        save_instance_info(instance_info._asdict(), savepath, **kwargs)
 
     # Modify the study.
-    new_instance_uid = study_info.StudyInstanceUID[:len(str(penn_id))] + (
+    new_instance_uid = instance_info.StudyInstanceUID[:len(str(penn_id))] + (
         str(penn_id)
     )
-    modify_study_info(
+    modify_instance_info(
         patient=patient,
         study=study,
         series=series,

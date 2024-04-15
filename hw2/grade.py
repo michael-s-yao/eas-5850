@@ -9,27 +9,28 @@ Licensed under the MIT License. Copyright University of Pennsylvania 2024.
 import argparse
 import json
 import logging
+from math import isclose
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 
 # Correct answer to parts (3) and (4) of HW 2.
 CORRECT_ANSWER = {
-    "Age": None,
+    "Age": "077Y",
     "Sex": "F",
     "StudyDescription": "CT ABD PELVIS(WITH CHEST IMAGES) W IV CON",
     "Modality": "CT",
     "Manufacturer": "TOSHIBA",
     "PatientID": "A034518",
-    "NumSeries": 1,
+    "NumSeries": 6,
     "StudyInstanceUID": (
-        "1.3.6.1.4.1.14519.5.2.1.99.1071.28052166218470275068707230421869"
+        "1.2.276.0.7230010.3.1.2.296485376.1.1713212825.444375"
     ),
-    "num_rows": 512,
-    "num_cols": 512,
-    "min_pixel_value": -2048,
-    "max_pixel_value": 1863,
-    "mean_pixel_value": -929
+    "NumRows": 512,
+    "NumCols": 512,
+    "MinPixelVal": -2048.0,
+    "MaxPixelVal": 1550.0,
+    "MeanPixelVal": -825.6180686950684
 }
 
 
@@ -66,6 +67,10 @@ def grade(
         return 3
     elif key not in study_info.keys():
         return 2
+    if isinstance(reference_correct_answer[key], float):
+        return 1 - int(isclose(study_info[key], reference_correct_answer[key]))
+    elif isinstance(reference_correct_answer[key], int):
+        return 1 - int(study_info[key] == reference_correct_answer[key])
     student_answer = str(study_info[key])
     correct_answer = str(reference_correct_answer[key])
     if not case_sensitive:
