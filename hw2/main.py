@@ -1,5 +1,5 @@
 """
-Instructor implementation for EAS 5850 HW 2 (Summer 2024).
+Instructor implementation for EAS 5850 HW 2 (Fall 2024).
 
 Author(s):
     Michael Yao @michael-s-yao
@@ -9,6 +9,7 @@ Licensed under the MIT License. Copyright University of Pennsylvania 2024.
 import json
 import logging
 import pyorthanc
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, NamedTuple, Optional, Tuple, Union
 
@@ -24,7 +25,7 @@ SAVEPATH: Union[Path, str] = "study_info.json"
 class InstanceInfo(NamedTuple):
     Age: str
     Sex: str
-    StudyDescription: str
+    StudyDescription: Optional[str]
     Modality: str
     Manufacturer: str
     PatientID: str
@@ -35,6 +36,20 @@ class InstanceInfo(NamedTuple):
     MinPixelVal: float
     MaxPixelVal: float
     MeanPixelVal: float
+
+
+def calculate_age(birth_date: datetime) -> int:
+    """
+    Calculates the current age (in years) of a patient given their birthday.
+    Input:
+        birth_date: the birthday of the patient.
+    Returns:
+        The current age (in years) of the patient.
+    """
+    today = date.today()
+    return today.year - birth_date.year - (
+        (today.month, today.day) < (birth_date.month, birth_date.day)
+    )
 
 
 def get_instance_info(
@@ -50,12 +65,12 @@ def get_instance_info(
     Optional[pyorthanc.Instance],
 ]:
     """
-    Retrieves the information about a patient study.
+    Retrieves the information about a patient study instance.
     Input:
         client: an Orthanc client to retrieve the study info from.
         patient_id: the patient ID to query by.
         series_number: the index of the series in the study to retrieve.
-        instance_number: the index of the isntance in the series to retreive.
+        instance_number: the index of the instance in the study to retrieve.
     Returns:
         instance_info: an InstanceInfo object. Returns None if no patient was
             found.
@@ -66,13 +81,16 @@ def get_instance_info(
     """
     query_results = pyorthanc.find_patients(client, {"PatientID": patient_id})
     if len(query_results) == 0:
-        return None, None, None, None
+        return None, None, None, None, None
 
     patient = next(iter(query_results))
     patient_info = patient.main_dicom_tags
 
     study = next(iter(patient.studies))
     study_info = study.main_dicom_tags
+    desc = None
+    if "StudyDescription" in study_info.keys():
+        desc = study_info["StudyDescription"]
 
     series = next(
         filter(lambda x: x.series_number == series_number, study.series)
@@ -84,6 +102,10 @@ def get_instance_info(
             lambda x: x.instance_number == instance_number, series.instances
         )
     )
+    try:
+        age = calculate_age(patient.birth_date)
+    except AttributeError:
+        age = instance.tags["0010,1010"]["Value"]
 
     image_data = instance.get_pydicom().pixel_array
     num_rows, num_cols = image_data.shape
@@ -91,9 +113,9 @@ def get_instance_info(
     mean_pixel_val = image_data.mean()
 
     instance_info = InstanceInfo(**{
-        "Age": instance.tags["0010,1010"]["Value"],
+        "Age": str(age),
         "Sex": patient.sex,
-        "StudyDescription": study_info["StudyDescription"],
+        "StudyDescription": desc,
         "Modality": series_info["Modality"],
         "Manufacturer": series_info["Manufacturer"],
         "PatientID": patient_info["PatientID"],
@@ -149,25 +171,33 @@ def modify_instance_info(
         None.
     """
     if series is not None and len(series_replace.keys()):
-        series.modify_as_job(replace=series_replace, **kwargs)
+        series.modify(replace=series_replace, **kwargs)
     if study is not None and len(study_replace.keys()):
-        study.modify_as_job(replace=study_replace, **kwargs)
+        study.modify(replace=study_replace, **kwargs)
     if patient is not None and len(patient_replace.keys()):
-        patient.modify_as_job(replace=patient_replace, **kwargs)
+        patient.modify(replace=patient_replace, **kwargs)
     return
 
 
 def main(
     penn_id: int,
-    patient_id: str = "A034518",
     orthanc_url: Union[Path, str] = "http://localhost:8042",
     username: str = "orthanc",
     password: str = "orthanc",
-    series_number: int = 4,
-    instance_number: int = 130,
     savepath: Optional[Union[Path, str]] = None,
+    keep_source: bool = True,
     **kwargs
 ):
+    """
+    Main execution function.
+    Input:
+        penn_id: the student's 8-digit Penn ID number.
+        orthanc_url: the URL to the Orthanc Web UI.
+        username: the username to log into the Orthanc instance.
+        password: the password to log into the Orthanc instance.
+        savepath: an optional savepath to save the retrieved patient info.
+        keep_source: whether to keep the original patient imaging study.
+    """
     assert 10000000 <= penn_id <= 99999999, "Must provide valid Penn ID"
 
     client = pyorthanc.Orthanc(
@@ -180,15 +210,22 @@ def main(
     # answer the questions about the imaging study.
     instance_info, patient, study, series, _ = get_instance_info(
         client,
-        patient_id,
-        series_number=series_number,
-        instance_number=instance_number
+        "A034518",
+        series_number=4,
+        instance_number=130
     )
     assert instance_info is not None, "Patient {patient_id} query failed"
 
     if savepath is not None:
         save_instance_info(instance_info._asdict(), savepath, **kwargs)
 
+    instance_info, patient, study, series, _ = get_instance_info(
+        client,
+        "3142537564",
+        series_number=-1,
+        instance_number=1
+    )
+    assert instance_info is not None, "Patient {patient_id} query failed"
     # Modify the study.
     new_instance_uid = instance_info.StudyInstanceUID[:len(str(penn_id))] + (
         str(penn_id)
@@ -206,7 +243,7 @@ def main(
         },
         series_replace={},
         force=True,
-        keep_source=False
+        keep_source=keep_source
     )
     logging.info("Done!")
 
